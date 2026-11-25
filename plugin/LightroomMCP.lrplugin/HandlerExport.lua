@@ -10,6 +10,7 @@ local KeywordTree = require 'KeywordTree'
 local PhotoLookup = require 'PhotoLookup'
 local Log = require 'Log'
 local ExportPresets = require 'ExportPresets'
+local ExportSettings = require 'ExportSettings'
 
 local ExportHandler = {}
 
@@ -205,7 +206,17 @@ local function runExport(args, context, run)
         error("on_existing must be one of: rename, overwrite, skip")
     end
 
+    ExportSettings.requireNoConflict(args)
+    local extraSettings = ExportSettings.validate(args.settings)
+
     local exportSettings = preset and presetSettings(preset, args) or defaultSettings(args)
+    if extraSettings then
+        for key, value in pairs(extraSettings) do exportSettings[key] = value end
+        -- Lightroom ignores the quality while a file size limit is on.
+        if extraSettings.LR_jpeg_quality ~= nil and extraSettings.LR_jpeg_useLimitSize == nil then
+            exportSettings.LR_jpeg_useLimitSize = false
+        end
+    end
     exportSettings.LR_collisionHandling = COLLISION_HANDLING[collisionHandling]
 
     applySizeLimit(exportSettings, args)
@@ -282,7 +293,7 @@ local function runExport(args, context, run)
         local name = photo:getFormattedMetadata("fileName") or tostring(photo.localIdentifier)
         if context then context:report(exportedCount, #photosToExport, name) end
         local photoSettings, settingsError = exportSettings, nil
-        if preset then
+        if preset or extraSettings then
             photoSettings, settingsError = settingsForPhoto(exportSettings, photo, index, #photosToExport)
         end
         if photoSettings then
@@ -363,7 +374,10 @@ function ExportHandler.listExportPresets(args)
     if args.folder ~= nil and (type(args.folder) ~= "string" or args.folder:match("^%s*$")) then
         error("folder must be a non-empty string")
     end
-    local presets = ExportPresets.list(args.folder)
+    if args.include_settings ~= nil and type(args.include_settings) ~= "boolean" then
+        error("include_settings must be true or false")
+    end
+    local presets = ExportPresets.list(args.folder, args.include_settings == true)
     return {
         presets = presets,
         count = #presets,

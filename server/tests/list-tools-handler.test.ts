@@ -6,6 +6,7 @@ import { validateToolArgs } from '../src/validate-args.js';
 import { TOOL_DEFINITIONS, listToolsHandler, publishedInputSchema } from '../src/list-tools-handler.js';
 import {
   DEVELOP_SETTING_KEYS,
+  EXPORT_SETTINGS,
   LOCAL_ADJUSTMENT_KEYS,
   MASK_CURVE_CHANNELS,
   POINT_CURVE_SETTING_KEYS,
@@ -736,5 +737,38 @@ describe('Remove spot contracts', () => {
     expect(validate({ photo_id: '1', index: 1, params: { opacity: 0.6 } })).toBe(false);
     expect(validate({ photo_id: '1', index: 1, params: { Opacity: 2 } })).toBe(false);
     expect(validate({ photo_id: '1', index: 1.5, params: { Opacity: 0.6 } })).toBe(false);
+  });
+});
+
+describe('export settings schema', () => {
+  it('matches the settings table the Lua handler validates against', () => {
+    const luaPath = path.resolve(process.cwd(), '..', 'plugin', 'LightroomMCP.lrplugin', 'ExportSettings.lua');
+    const luaNames = [...fs.readFileSync(luaPath, 'utf8').matchAll(/^ {4}(\w+) = \{ kind =/gm)].map((m) => m[1]);
+
+    expect(luaNames).toEqual(Object.keys(EXPORT_SETTINGS));
+  });
+
+  it('accepts export-dialog values over a preset', () => {
+    expect(validateToolArgs('export_photos', {
+      photo_ids: ['1'],
+      export_preset: 'PicDrop-Live',
+      settings: { embeddedMetadataOption: 'copyrightOnly', renamingTokensOn: true, tokens: '{{com.adobe.title}}', jpeg_quality: 0.7 },
+    })).toBeNull();
+  });
+
+  it('names an unknown, mistyped or out-of-range setting', () => {
+    const base = { photo_ids: ['1'], destination: '/out' };
+    expect(validateToolArgs('export_photos', { ...base, settings: { LR_format: 'JPEG' } })).toContain('LR_format');
+    expect(validateToolArgs('export_photos', { ...base, settings: { export_postProcessing: 'doNothing' } })).toContain('export_postProcessing');
+    expect(validateToolArgs('export_photos', { ...base, settings: { size_doConstrain: 'yes' } })).toContain('settings.size_doConstrain');
+    expect(validateToolArgs('export_photos', { ...base, settings: { jpeg_quality: 70 } })).toContain('settings.jpeg_quality');
+    expect(validateToolArgs('export_photos', { ...base, settings: { format: 'jpeg' } })).toContain('settings.format');
+    expect(validateToolArgs('export_photos', { ...base, settings: { tokens: 'a\nb' } })).toContain('settings.tokens');
+    expect(validateToolArgs('export_photos', { ...base, settings: {} })).not.toBeNull();
+  });
+
+  it('accepts include_settings on list_export_presets', () => {
+    expect(validateToolArgs('list_export_presets', { include_settings: true })).toBeNull();
+    expect(validateToolArgs('list_export_presets', { include_settings: 'yes' })).not.toBeNull();
   });
 });

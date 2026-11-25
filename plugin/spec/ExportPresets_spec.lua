@@ -723,3 +723,124 @@ line]],
         assert.truthy(err:find("nested too deeply", 1, true))
     end)
 end)
+
+describe("Lightroom's own localized presets", function()
+    it("reads ZSTR titles like LOC", function()
+        local files = { [ROOT .. "/Lightroom-Presets/Mail.lrtemplate"] = [[
+s = {
+	id = "8C7D8A1C-0000-0000-0000-000000000001",
+	internalName = "Für E-Mail",
+	title = ZSTR "$$$/AgExport/Presets/Email=Für E-Mail",
+	type = "Export",
+	value = {
+		format = "JPEG",
+		jpeg_quality = 0.6,
+		export_destinationType = "tempFolder",
+	},
+	version = 0,
+}
+]] }
+        local ExportPresets = setup({ files = files })
+        local preset = byName(ExportPresets.list(), "Für E-Mail")
+        assert.is_not_nil(preset)
+        assert.is_nil(preset.unusable_reason)
+        assert.are.equal("JPEG", preset.format)
+    end)
+end)
+
+describe("ExportPresets.list with settings", function()
+    it("adds the plain settings of usable presets only when asked", function()
+        local ExportPresets = setup()
+        local plain = byName(ExportPresets.list(), "BlueSky")
+        assert.is_nil(plain.settings)
+        local presets = ExportPresets.list(nil, true)
+        local blue = byName(presets, "BlueSky")
+        assert.are.equal("JPEG", blue.settings.format)
+        assert.are.equal("Bsky - {{com.adobe.title}} {{image_originalName}}", blue.settings.tokens)
+        assert.is_true(blue.settings.removeLocationMetadata)
+        assert.is_nil(blue.settings.markedPresets)
+        assert.is_nil(byName(presets, "DxOPureRAWv6_proc_inst") and byName(presets, "DxOPureRAWv6_proc_inst").settings)
+    end)
+
+    it("rejects a non-boolean include_settings", function()
+        local _, Handler = setup()
+        assert.has_error(function() Handler.listExportPresets({ include_settings = "yes" }) end,
+            "include_settings must be true or false")
+        assert.is_not_nil(byName(Handler.listExportPresets({ include_settings = true }).presets, "BlueSky").settings)
+    end)
+end)
+
+describe("HandlerExport.exportPhotos with settings", function()
+    local function photo(id) return helper.fakePhoto({ id = id or "1", path = "/" .. (id or "1") .. ".jpg" }) end
+
+    it("layers settings over the preset and keeps the rest", function()
+        local _, Handler, calls = setup({ photos = { photo() } })
+        Handler.exportPhotos({ photo_ids = { "1" }, destination = "/out", export_preset = "BlueSky",
+            settings = { embeddedMetadataOption = "copyrightOnly", tokens = "{{com.adobe.title}}",
+                outputSharpeningOn = false, export_colorSpace = "AdobeRGB" } })
+        local s = calls[1].exportSettings
+        assert.are.equal("copyrightOnly", s.LR_embeddedMetadataOption)
+        assert.are.equal("{{com.adobe.title}}", s.LR_tokens)
+        assert.is_true(s.LR_renamingTokensOn)
+        assert.is_false(s.LR_outputSharpeningOn)
+        assert.are.equal("AdobeRGB", s.LR_export_colorSpace)
+        assert.is_true(s.LR_removeLocationMetadata)
+        assert.are.equal("/out", s.LR_export_destinationPathPrefix)
+        assert.are.equal("rename", s.LR_collisionHandling)
+        assert.are.equal("doNothing", s.LR_export_postProcessing)
+    end)
+
+    it("layers settings over the tool's defaults without a preset", function()
+        local _, Handler, calls = setup({ photos = { photo() } })
+        Handler.exportPhotos({ photo_ids = { "1" }, destination = "/out",
+            settings = { format = "DNG", DNG_lossyCompression = true, size_doConstrain = true,
+                size_resizeType = "longEdge", size_maxHeight = 2560, size_units = "pixels" } })
+        local s = calls[1].exportSettings
+        assert.are.equal("DNG", s.LR_format)
+        assert.is_true(s.LR_DNG_lossyCompression)
+        assert.are.equal("longEdge", s.LR_size_resizeType)
+        assert.are.equal(2560, s.LR_size_maxHeight)
+    end)
+
+    it("turns off a size limit when jpeg_quality is set alone", function()
+        local files = { [ROOT .. "/F/Limit.lrtemplate"] =
+            's = { title = "Limit", type = "Export", value = { format = "JPEG", jpeg_useLimitSize = true, jpeg_limitSize = 500 } }' }
+        local _, Handler, calls = setup({ files = files, photos = { photo() } })
+        Handler.exportPhotos({ photo_ids = { "1" }, destination = "/out", export_preset = "Limit",
+            settings = { jpeg_quality = 0.7 } })
+        assert.are.equal(0.7, calls[1].exportSettings.LR_jpeg_quality)
+        assert.is_false(calls[1].exportSettings.LR_jpeg_useLimitSize)
+    end)
+
+    it("continues numbering across photos when settings rename them", function()
+        local _, Handler, calls = setup({ photos = { photo("1"), photo("2") } })
+        Handler.exportPhotos({ photo_ids = { "1", "2" }, destination = "/out",
+            settings = { renamingTokensOn = true, tokens = "Job-{{naming_sequenceNumber_3Digits}}", initialSequenceNumber = 10 } })
+        assert.are.equal(10, calls[1].exportSettings.LR_initialSequenceNumber)
+        assert.are.equal(11, calls[2].exportSettings.LR_initialSequenceNumber)
+    end)
+
+    it("refuses bad settings before exporting or creating a folder", function()
+        local _, Handler, calls = setup({ photos = { photo() } })
+        local function refuses(settings, message, extra)
+            local args = { photo_ids = { "1" }, destination = "/new", settings = settings }
+            for k, v in pairs(extra or {}) do args[k] = v end
+            assert.has_error(function() Handler.exportPhotos(args) end, message)
+        end
+        refuses({ export_postProcessing = "openInOtherApp" }, 'settings has unknown or unsupported property "export_postProcessing"')
+        refuses({ LR_format = "JPEG" }, "settings.LR_format: leave out the LR_ prefix (use format)")
+        refuses({ size_doConstrain = "yes" }, "settings.size_doConstrain must be true or false")
+        refuses({ jpeg_quality = 70 }, "settings.jpeg_quality must be at most 1")
+        refuses({ export_bitDepth = 12 }, "settings.export_bitDepth must be one of: 16, 8")
+        refuses({ format = "jpeg" }, "settings.format must be one of: DNG, JPEG, ORIGINAL, PNG, PSD, TIFF")
+        refuses({ tokens = "a\nb" }, "settings.tokens must not contain control characters")
+        refuses({ initialSequenceNumber = 1.5 }, "settings.initialSequenceNumber must be a whole number")
+        refuses({ size_maxWidth = 0 }, "settings.size_maxWidth must be above 0")
+        refuses({}, "settings must contain at least one setting")
+        refuses({ "JPEG" }, "settings must be an object, not an array")
+        refuses({ jpeg_quality = 0.5 }, "Pass quality or settings.jpeg_quality, not both", { quality = 50 })
+        refuses({ size_maxWidth = 100 }, "Pass width or settings.size_maxWidth, not both", { width = 50 })
+        refuses({ format = "PNG" }, "Pass format or settings.format, not both", { format = "png" })
+        assert.are.equal(0, #calls)
+    end)
+end)

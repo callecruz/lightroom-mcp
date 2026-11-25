@@ -4,6 +4,7 @@ import {
   deleteMasksValidationSchema,
   developSettingKeysValidationSchema,
   developSettingsValidationSchema,
+  exportSettingsValidationSchema,
   TOOL_CONTRACTS,
 } from "./tool-contracts.js";
 import { PREVIEW_SIZE_ERROR } from "./preview-sizes.js";
@@ -25,7 +26,9 @@ const validators = new Map<string, ValidateFunction>(
       ? developSettingsValidationSchema
       : ["copy_develop_settings", "create_develop_preset"].includes(contract.name)
         ? { ...(contract.inputSchema.properties?.settings as object), ...developSettingKeysValidationSchema }
-        : null;
+        : contract.name === "export_photos"
+          ? exportSettingsValidationSchema
+          : null;
     const properties: Record<string, object> = { ...contract.inputSchema.properties, ...(settings ? { settings } : {}) };
     if (contract.name === "set_develop_settings") {
       const items = properties.items as { items: { properties: object } };

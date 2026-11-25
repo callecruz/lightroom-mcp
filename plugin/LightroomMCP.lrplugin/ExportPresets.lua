@@ -177,8 +177,9 @@ local function parsePreset(source)
             if word == "nil" then return nil end
             return word == "true"
         end
-        if word == "LOC" then
-            pos = pos + 3
+        -- Lightroom's own presets write ZSTR "$$$/Key=Text", the same form as LOC.
+        if word == "LOC" or word == "ZSTR" then
+            pos = pos + #word
             skipSpace()
             local parenthesised = source:sub(pos, pos) == "("
             if parenthesised then
@@ -187,7 +188,7 @@ local function parsePreset(source)
             end
             local first = source:sub(pos, pos)
             if first ~= '"' and first ~= "'" and not source:match("^%[=*%[", pos) then
-                fail("expected a string after LOC")
+                fail("expected a string after " .. word)
             end
             local text = parseString()
             if parenthesised then
@@ -443,11 +444,28 @@ local function summary(entry)
     return result
 end
 
-function ExportPresets.list(folder)
+-- A usable preset's own settings, as written in its file (no LR_ prefix).
+-- Only plain values: nested tables such as markedPresets are left out.
+local function plainSettings(value)
+    local settings = {}
+    for key, v in pairs(value) do
+        local kind = type(v)
+        if type(key) == "string" and (kind == "string" or kind == "number" or kind == "boolean") then
+            settings[key] = v
+        end
+    end
+    return settings
+end
+
+function ExportPresets.list(folder, includeSettings)
     local result = {}
     for _, entry in ipairs(allEntries()) do
         if folder == nil or entry.folder == folder then
-            table.insert(result, summary(entry))
+            local row = summary(entry)
+            if includeSettings and entry.value then
+                row.settings = plainSettings(entry.value)
+            end
+            table.insert(result, row)
         end
     end
     return result

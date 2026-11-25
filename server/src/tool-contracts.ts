@@ -446,6 +446,65 @@ export const developSettingKeysValidationSchema = {
   items: { type: "string", enum: [...DEVELOP_SETTING_KEYS] },
 };
 
+// Export dialog settings accepted by export_photos.settings, spelled as in an
+// .lrtemplate file (no LR_ prefix). Must match ExportSettings.lua; a Jest test
+// compares the two lists. Every value is also type-checked in the plug-in.
+const exportBoolean = { type: "boolean" };
+const exportText = { type: "string", minLength: 1, pattern: "^[^\\u0000-\\u001f]*$" };
+const exportPositive = { type: "number", exclusiveMinimum: 0 };
+const exportTextOf = (...values: string[]) => ({ type: "string", enum: values });
+export const EXPORT_SETTINGS: Record<string, object> = {
+  format: exportTextOf("JPEG", "PNG", "TIFF", "PSD", "DNG", "ORIGINAL"),
+  jpeg_quality: { type: "number", minimum: 0, maximum: 1 },
+  jpeg_useLimitSize: exportBoolean,
+  jpeg_limitSize: { type: "integer", minimum: 1 },
+  export_colorSpace: exportText,
+  export_bitDepth: { type: "integer", enum: [8, 16] },
+  tiff_compressionMethod: exportTextOf("compressionMethod_None", "compressionMethod_LZW", "compressionMethod_ZIP"),
+  tiff_preserveTransparency: exportBoolean,
+  DNG_compatibility: { type: "integer", minimum: 0 },
+  DNG_conversionMethod: exportText,
+  DNG_previewSize: exportTextOf("none", "medium", "large"),
+  DNG_embedCache: exportBoolean,
+  DNG_embedRAW: exportBoolean,
+  DNG_lossyCompression: exportBoolean,
+  DNG_compressed: exportBoolean,
+  includeVideoFiles: exportBoolean,
+  size_doConstrain: exportBoolean,
+  size_doNotEnlarge: exportBoolean,
+  size_resizeType: exportTextOf("wh", "dimensions", "longEdge", "shortEdge", "megapixels", "percentage"),
+  size_maxWidth: exportPositive,
+  size_maxHeight: exportPositive,
+  size_units: exportTextOf("pixels", "inch", "cm"),
+  size_megapixels: exportPositive,
+  size_percentage: exportPositive,
+  size_resolution: exportPositive,
+  size_resolutionUnits: exportTextOf("inch", "cm"),
+  outputSharpeningOn: exportBoolean,
+  outputSharpeningMedia: exportTextOf("screen", "matte", "glossy"),
+  outputSharpeningLevel: { type: "integer", enum: [1, 2, 3] },
+  embeddedMetadataOption: exportText,
+  metadata_keywordOptions: exportText,
+  removeLocationMetadata: exportBoolean,
+  removeFaceMetadata: exportBoolean,
+  includeFaceTagsAsKeywords: exportBoolean,
+  includeFaceTagsInIptc: exportBoolean,
+  renamingTokensOn: exportBoolean,
+  tokens: exportText,
+  tokenCustomString: { type: "string", pattern: "^[^\\u0000-\\u001f]*$" },
+  initialSequenceNumber: { type: "integer", minimum: 0 },
+  extensionCase: exportTextOf("lowercase", "uppercase"),
+  useWatermark: exportBoolean,
+  watermarking_id: exportText,
+};
+
+export const exportSettingsValidationSchema = {
+  type: "object",
+  properties: EXPORT_SETTINGS,
+  additionalProperties: false,
+  minProperties: 1,
+};
+
 const presetSelectorProperties = {
   preset_name: { type: "string", minLength: 1, description: "Develop preset name" },
   preset_uuid: { type: "string", minLength: 1, description: "Develop preset UUID (preferred)" },
@@ -1214,7 +1273,7 @@ export const TOOL_CONTRACTS: ToolContract[] = [
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
     luaHandler: "HandlerExport.exportPhotos",
     description:
-      "Export photos, optionally with a saved export preset; format/quality/width/height override only those preset settings. Skips the preset's collision prompt and after-export action. A photo with outdated AI settings can open Lightroom's AI Updates dialog, which blocks until dismissed. Returns success, exported and skipped counts, failed, missing IDs, destination, preset, complete and remaining_ids to retry.",
+      "Export photos, optionally with a saved export preset; format/quality/width/height override only those preset settings, and settings overrides any other listed export-dialog value. Skips the preset's collision prompt and after-export action. A photo with outdated AI settings can open Lightroom's AI Updates dialog, which blocks until dismissed. Returns success, exported and skipped counts, failed, missing IDs, destination, preset, complete and remaining_ids to retry.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1254,6 +1313,14 @@ export const TOOL_CONTRACTS: ToolContract[] = [
             "What to do when the destination already holds a file with that name (default rename). Lightroom never prompts.",
           enum: ["rename", "overwrite", "skip"],
         },
+        settings: {
+          type: "object",
+          minProperties: 1,
+          propertyNames: { enum: Object.keys(EXPORT_SETTINGS) },
+          additionalProperties: { type: ["string", "number", "boolean"] },
+          description:
+            "Export-dialog values over the preset or defaults, keyed as in .lrtemplate files without LR_ (list_export_presets include_settings shows a preset's), e.g. {\"embeddedMetadataOption\": \"copyrightOnly\", \"renamingTokensOn\": true, \"tokens\": \"{{com.adobe.title}}\"}. jpeg_quality is 0-1. Not with format/quality/width/height for the same setting.",
+        },
       },
       required: ["photo_ids"],
       anyOf: [{ required: ["destination"] }, { required: ["export_preset"] }],
@@ -1276,6 +1343,10 @@ export const TOOL_CONTRACTS: ToolContract[] = [
           minLength: 1,
           pattern: "\\S",
           description: "Only this folder",
+        },
+        include_settings: {
+          type: "boolean",
+          description: "Add each usable preset's plain settings as written in its file, to read or pass back as export_photos settings",
         },
       },
     },
