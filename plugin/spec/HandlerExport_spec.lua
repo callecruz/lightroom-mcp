@@ -106,6 +106,26 @@ describe("HandlerExport.exportPhotos", function()
         assert.are.same({ false, true }, outcomes)
     end)
 
+    it("counts each photo of a group and reports one Lightroom did not render", function()
+        local photos = { helper.fakePhoto({ id = "1", path = "/1.jpg" }), helper.fakePhoto({ id = "2", path = "/2.jpg" }),
+            helper.fakePhoto({ id = "3", path = "/3.jpg" }) }
+        local _, Handler, calls = setup({ photos = photos })
+        local r = Handler.exportPhotos({ photo_ids = { "1", "2", "3" }, destination = "/out", photos_per_session = 3 })
+        assert.are.equal(1, #calls)
+        assert.are.equal(3, r.exported)
+
+        local original = helper.fakeRenditions
+        helper.fakeRenditions = function(session)
+            local onlyFirst = { photosToExport = { session.photosToExport[1] }, exportSettings = session.exportSettings }
+            return original(onlyFirst)
+        end
+        local ok, result = pcall(Handler.exportPhotos, { photo_ids = { "1", "2" }, destination = "/out", photos_per_session = 2 })
+        helper.fakeRenditions = original
+        assert.is_true(ok, tostring(result))
+        assert.are.equal(1, result.exported)
+        assert.are.same({ { id = "2", reason = "Lightroom rendered no file" } }, result.failed)
+    end)
+
     it("lists ids that match no photo", function()
         local p = helper.fakePhoto({ id = "1", path = "/a.jpg" })
         local _, Handler = setup({ photos = { p } })

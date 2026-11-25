@@ -844,3 +844,45 @@ describe("HandlerExport.exportPhotos with settings", function()
         assert.are.equal(0, #calls)
     end)
 end)
+
+describe("HandlerExport.exportPhotos with photos_per_session", function()
+    local function photos(n)
+        local list = {}
+        for i = 1, n do
+            list[i] = helper.fakePhoto({ id = tostring(i), path = "/" .. i .. ".jpg",
+                croppedDimensions = { width = 6000, height = 4000 } })
+        end
+        return list
+    end
+
+    it("hands Lightroom groups of photos and continues numbering per group", function()
+        local _, Handler, calls = setup({ photos = photos(5) })
+        Handler.exportPhotos({ photo_ids = { "1", "2", "3", "4", "5" }, destination = "/out",
+            photos_per_session = 2, settings = { renamingTokensOn = true, tokens = "x{{naming_sequenceNumber_3Digits}}" } })
+        assert.are.equal(3, #calls)
+        assert.are.equal(2, #calls[1].photosToExport)
+        assert.are.equal(1, #calls[3].photosToExport)
+        assert.are.equal(1, calls[1].exportSettings.LR_initialSequenceNumber)
+        assert.are.equal(3, calls[2].exportSettings.LR_initialSequenceNumber)
+        assert.are.equal(5, calls[3].exportSettings.LR_initialSequenceNumber)
+    end)
+
+    it("keeps one photo per session for a size worked out per photo", function()
+        local files = { [ROOT .. "/F/Pct.lrtemplate"] =
+            's = { title = "Pct", type = "Export", value = { size_doConstrain = true, size_resizeType = "percentage", size_percentage = 50 } }' }
+        local _, Handler, calls = setup({ files = files, photos = photos(3) })
+        Handler.exportPhotos({ photo_ids = { "1", "2", "3" }, destination = "/out", export_preset = "Pct",
+            photos_per_session = 3 })
+        assert.are.equal(3, #calls)
+        assert.are.equal(3000, calls[1].exportSettings.LR_size_maxWidth)
+    end)
+
+    it("rejects an out-of-range photos_per_session", function()
+        local _, Handler = setup({ photos = photos(1) })
+        for _, n in ipairs({ 0, 51, 1.5, "2" }) do
+            assert.has_error(function()
+                Handler.exportPhotos({ photo_ids = { "1" }, destination = "/out", photos_per_session = n })
+            end, "photos_per_session must be a whole number from 1 to 50")
+        end
+    end)
+end)

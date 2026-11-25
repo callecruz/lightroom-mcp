@@ -620,6 +620,7 @@ function M.fakeRenditions(session)
         if not photos[index] then return nil end
         local path = tostring(session.exportSettings.LR_export_destinationPathPrefix) .. "/" .. tostring(index)
         return index, {
+            photo = photos[index],
             destinationPath = path,
             waitForRender = function() return true, path end,
         }

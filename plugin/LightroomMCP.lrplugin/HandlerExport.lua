@@ -28,6 +28,9 @@ local DEFAULT_COLLISION_HANDLING = 'rename'
 local DEFAULT_JPEG_QUALITY = 90
 -- Lightroom's largest exported edge; leaves an edge nobody limited unconstrained.
 local MAX_EXPORT_EDGE = 65000
+-- Upper bound for photos_per_session; a group must finish well inside the
+-- server timeout because a running session cannot be cancelled.
+local MAX_PHOTOS_PER_SESSION = 50
 
 local EXPORT_FORMATS = {
     jpeg = 'JPEG',
@@ -277,12 +280,29 @@ local function runExport(args, context, run)
         destination = presetFolder or exportSettings.LR_export_destinationType
     end
 
+    -- One session per photo by default, so a batch can be cancelled between
+    -- photos. photos_per_session > 1 hands Lightroom several photos at once,
+    -- which it renders in parallel; cancelling then waits for the running
+    -- group. A size Lightroom cannot apply to a whole session (percentage,
+    -- fractional megapixels) keeps one photo per session.
+    local perSession = 1
+    if args.photos_per_session ~= nil then
+        local n = args.photos_per_session
+        if type(n) ~= "number" or n ~= math.floor(n) or n < 1 or n > MAX_PHOTOS_PER_SESSION then
+            error("photos_per_session must be a whole number from 1 to " .. MAX_PHOTOS_PER_SESSION)
+        end
+        perSession = n
+    end
+    if needsProportionalSize(exportSettings) then perSession = 1 end
+    local renumber = preset ~= nil or extraSettings ~= nil
+
     local exportedCount = 0
     local skippedCount = 0
     local failed = {}
     local remainingIds = {}
     local lastName
-    for index, photo in ipairs(photosToExport) do
+    local index = 1
+    while index <= #photosToExport do
         if context and context:isCanceled() then
             for nextIndex = index, #photosToExport do
                 remainingIds[#remainingIds + 1] = tostring(photosToExport[nextIndex].localIdentifier)
@@ -290,42 +310,63 @@ local function runExport(args, context, run)
             break
         end
         run.lastPhotoAt = LrDate.currentTime()
+        local photo = photosToExport[index]
+        local group = {}
+        for i = index, math.min(index + perSession - 1, #photosToExport) do
+            group[#group + 1] = photosToExport[i]
+        end
         local name = photo:getFormattedMetadata("fileName") or tostring(photo.localIdentifier)
         if context then context:report(exportedCount, #photosToExport, name) end
-        local photoSettings, settingsError = exportSettings, nil
-        if preset or extraSettings then
-            photoSettings, settingsError = settingsForPhoto(exportSettings, photo, index, #photosToExport)
+        local groupSettings, settingsError = exportSettings, nil
+        if renumber then
+            groupSettings, settingsError = settingsForPhoto(exportSettings, photo, index, #photosToExport)
         end
-        if photoSettings then
+        if groupSettings then
             local exportSession = LrExportSession {
-                photosToExport = { photo },
-                exportSettings = photoSettings,
+                photosToExport = group,
+                exportSettings = groupSettings,
             }
             exportSession:doExportOnCurrentTask()
-            local renditionCount = 0
+            local inGroup = {}
+            for _, groupPhoto in ipairs(group) do inGroup[groupPhoto] = true end
+            local rendered = {}
+            local renditionIndex = 0
             for _, rendition in exportSession:renditions() do
-                renditionCount = renditionCount + 1
-                local rendered, pathOrMessage = rendition:waitForRender()
-                if rendered and LrFileUtils.exists(pathOrMessage) then
+                renditionIndex = renditionIndex + 1
+                -- Renditions come in the session's photo order; rendition.photo
+                -- names the photo when Lightroom provides it.
+                local renditionPhoto = rendition.photo
+                if not inGroup[renditionPhoto] then renditionPhoto = group[renditionIndex] or group[1] end
+                local key = tostring(renditionPhoto.localIdentifier)
+                rendered[key] = true
+                local ok, pathOrMessage = rendition:waitForRender()
+                if ok and LrFileUtils.exists(pathOrMessage) then
                     exportedCount = exportedCount + 1
+                    if context and #group > 1 then context:report(exportedCount, #photosToExport, name) end
                 else
                     failed[#failed + 1] = {
-                        id = tostring(photo.localIdentifier),
-                        reason = rendered and "Lightroom wrote no file" or tostring(pathOrMessage),
+                        id = key,
+                        reason = ok and "Lightroom wrote no file" or tostring(pathOrMessage),
                     }
                 end
             end
-            if renditionCount == 0 then
-                if collisionHandling == 'skip' then
-                    skippedCount = skippedCount + 1
-                else
-                    failed[#failed + 1] = { id = tostring(photo.localIdentifier), reason = "Lightroom rendered no file" }
+            for _, groupPhoto in ipairs(group) do
+                local key = tostring(groupPhoto.localIdentifier)
+                if not rendered[key] then
+                    if collisionHandling == 'skip' then
+                        skippedCount = skippedCount + 1
+                    else
+                        failed[#failed + 1] = { id = key, reason = "Lightroom rendered no file" }
+                    end
                 end
             end
         else
-            failed[#failed + 1] = { id = tostring(photo.localIdentifier), reason = settingsError }
+            for _, groupPhoto in ipairs(group) do
+                failed[#failed + 1] = { id = tostring(groupPhoto.localIdentifier), reason = settingsError }
+            end
         end
         lastName = name
+        index = index + #group
     end
     if context and lastName then context:report(exportedCount, #photosToExport, lastName) end
 

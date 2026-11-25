@@ -1313,6 +1313,12 @@ export const TOOL_CONTRACTS: ToolContract[] = [
             "What to do when the destination already holds a file with that name (default rename). Lightroom never prompts.",
           enum: ["rename", "overwrite", "skip"],
         },
+        photos_per_session: {
+          type: "integer",
+          minimum: 1,
+          maximum: 50,
+          description: "Photos Lightroom renders together (default 1); more is faster but cancel waits for the group",
+        },
         settings: {
           type: "object",
           minProperties: 1,
